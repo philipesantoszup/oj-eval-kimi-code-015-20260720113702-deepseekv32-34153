@@ -10,25 +10,28 @@ using namespace std;
 
 const string DATA_FILE = "storage.dat";
 const int MAX_KEY_LEN = 64;
-const int HASH_SIZE = 100003; // Prime number for better distribution, ~400KB
+const int HASH_SIZE = 32768; // Reduced for better cache usage, ~128KB
 const int INVALID_INDEX = -1;
 
 struct Entry {
     char key[MAX_KEY_LEN + 1];
     int value;
-    int next; // next entry in chain, -1 for end
-    bool valid;
+    int next; // -1 for end, or next free entry if free
     
-    Entry() : next(INVALID_INDEX), valid(false) {
+    Entry() : next(INVALID_INDEX) {
         memset(key, 0, sizeof(key));
     }
     
     bool matches(const string& k, int v) const {
-        return valid && strcmp(key, k.c_str()) == 0 && value == v;
+        return strcmp(key, k.c_str()) == 0 && value == v;
     }
     
     bool matchesKey(const string& k) const {
-        return valid && strcmp(key, k.c_str()) == 0;
+        return strcmp(key, k.c_str()) == 0;
+    }
+    
+    bool isEmpty() const {
+        return key[0] == '\0'; // Empty key means free entry
     }
 };
 
@@ -40,11 +43,11 @@ private:
     int entry_count;
     bool dirty; // whether hash table needs to be written back
     
-    // Simple but fast hash function
+    // Fast hash function
     size_t hashKey(const string& key) const {
-        size_t hash = 0;
+        size_t hash = 5381;
         for (char c : key) {
-            hash = hash * 131 + c;
+            hash = ((hash << 5) + hash) + c; // hash * 33 + c
         }
         return hash % HASH_SIZE;
     }
@@ -81,21 +84,38 @@ private:
             file.seekg(getEntriesOffset() + index * sizeof(Entry) + offsetof(Entry, next));
             file.read(reinterpret_cast<char*>(&next_free), sizeof(next_free));
             free_head = next_free;
+            
+            // Clear the entry
+            Entry empty_entry;
+            file.seekp(getEntriesOffset() + index * sizeof(Entry));
+            file.write(reinterpret_cast<const char*>(&empty_entry), sizeof(empty_entry));
+            file.flush();
+            
             return index;
         } else {
             // Append new entry
             int index = entry_count;
             entry_count++;
+            
+            // Pre-allocate space in file if needed
+            if (entry_count * sizeof(Entry) > 0) {
+                file.seekp(getEntriesOffset() + (entry_count - 1) * sizeof(Entry));
+                char zero = 0;
+                file.write(&zero, 1); // Extend file
+            }
+            
             return index;
         }
     }
     
     void freeEntry(int index) {
-        // Write free_head to entry.next
-        file.seekp(getEntriesOffset() + index * sizeof(Entry) + offsetof(Entry, next));
-        file.write(reinterpret_cast<const char*>(&free_head), sizeof(free_head));
-        
+        // Clear the entry
+        Entry empty_entry;
+        empty_entry.next = free_head;
+        file.seekp(getEntriesOffset() + index * sizeof(Entry));
+        file.write(reinterpret_cast<const char*>(&empty_entry), sizeof(empty_entry));
         file.flush();
+        
         free_head = index;
     }
     
@@ -175,7 +195,6 @@ public:
         new_entry.key[MAX_KEY_LEN] = '\0';
         new_entry.value = value;
         new_entry.next = hash_table[h];
-        new_entry.valid = true;
         
         writeEntry(index, new_entry);
         
