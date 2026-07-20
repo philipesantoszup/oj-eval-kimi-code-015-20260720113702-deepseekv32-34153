@@ -10,7 +10,7 @@ using namespace std;
 
 const string DATA_FILE = "storage.dat";
 const int MAX_KEY_LEN = 64;
-const int HASH_SIZE = 50021; // Smaller prime to reduce memory, ~200KB
+const int HASH_SIZE = 100003; // Prime number for better distribution, ~400KB
 const int INVALID_INDEX = -1;
 
 struct Entry {
@@ -40,12 +40,11 @@ private:
     int entry_count;
     bool dirty; // whether hash table needs to be written back
     
-    // FNV-1a hash function
+    // Simple but fast hash function
     size_t hashKey(const string& key) const {
-        size_t hash = 14695981039346656037ULL;
+        size_t hash = 0;
         for (char c : key) {
-            hash ^= static_cast<unsigned char>(c);
-            hash *= 1099511628211ULL;
+            hash = hash * 131 + c;
         }
         return hash % HASH_SIZE;
     }
@@ -95,11 +94,6 @@ private:
         // Write free_head to entry.next
         file.seekp(getEntriesOffset() + index * sizeof(Entry) + offsetof(Entry, next));
         file.write(reinterpret_cast<const char*>(&free_head), sizeof(free_head));
-        
-        // Mark as invalid
-        char valid_flag = 0;
-        file.seekp(getEntriesOffset() + index * sizeof(Entry) + offsetof(Entry, valid));
-        file.write(&valid_flag, sizeof(valid_flag));
         
         file.flush();
         free_head = index;
