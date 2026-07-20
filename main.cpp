@@ -10,7 +10,7 @@ using namespace std;
 
 const string DATA_FILE = "storage.dat";
 const int MAX_KEY_LEN = 64;
-const int HASH_SIZE = 100003; // Prime number for better distribution
+const int HASH_SIZE = 50021; // Smaller prime to reduce memory, ~200KB
 const int INVALID_INDEX = -1;
 
 struct Entry {
