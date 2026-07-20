@@ -35,8 +35,10 @@ struct Entry {
 class DiskHashTable {
 private:
     fstream file;
+    vector<int> hash_table; // in memory
     int free_head; // head of free list
     int entry_count;
+    bool dirty; // whether hash table needs to be written back
     
     // FNV-1a hash function
     size_t hashKey(const string& key) const {
@@ -60,18 +62,19 @@ private:
         return getHashTableOffset() + getHashTableSize();
     }
     
-    void readHashTable(int* hash_table) {
+    void readHashTable() {
         file.seekg(getHashTableOffset());
-        file.read(reinterpret_cast<char*>(hash_table), getHashTableSize());
+        file.read(reinterpret_cast<char*>(hash_table.data()), getHashTableSize());
     }
     
-    void writeHashTable(const int* hash_table) {
+    void writeHashTable() {
         file.seekp(getHashTableOffset());
-        file.write(reinterpret_cast<const char*>(hash_table), getHashTableSize());
+        file.write(reinterpret_cast<const char*>(hash_table.data()), getHashTableSize());
         file.flush();
+        dirty = false;
     }
     
-    int allocateEntry(int* hash_table) {
+    int allocateEntry() {
         if (free_head != INVALID_INDEX) {
             int index = free_head;
             // Read next free pointer from the free entry
@@ -88,7 +91,7 @@ private:
         }
     }
     
-    void freeEntry(int index, int* hash_table) {
+    void freeEntry(int index) {
         // Write free_head to entry.next
         file.seekp(getEntriesOffset() + index * sizeof(Entry) + offsetof(Entry, next));
         file.write(reinterpret_cast<const char*>(&free_head), sizeof(free_head));
@@ -114,13 +117,18 @@ private:
     }
     
 public:
-    DiskHashTable() : free_head(INVALID_INDEX), entry_count(0) {
+    DiskHashTable() : free_head(INVALID_INDEX), entry_count(0), dirty(false) {
+        hash_table.resize(HASH_SIZE, INVALID_INDEX);
+        
         if (filesystem::exists(DATA_FILE)) {
             file.open(DATA_FILE, ios::binary | ios::in | ios::out);
             // Read free_head and entry_count from beginning of file
             file.seekg(0);
             file.read(reinterpret_cast<char*>(&free_head), sizeof(free_head));
             file.read(reinterpret_cast<char*>(&entry_count), sizeof(entry_count));
+            
+            // Read hash table from file
+            readHashTable();
         } else {
             file.open(DATA_FILE, ios::binary | ios::in | ios::out | ios::trunc);
             free_head = INVALID_INDEX;
@@ -132,10 +140,7 @@ public:
             file.write(reinterpret_cast<const char*>(&entry_count), sizeof(entry_count));
             
             // Initialize hash table with -1
-            vector<int> empty_hash(HASH_SIZE, INVALID_INDEX);
-            file.write(reinterpret_cast<const char*>(empty_hash.data()), getHashTableSize());
-            
-            file.flush();
+            writeHashTable();
         }
     }
     
@@ -145,15 +150,17 @@ public:
             file.seekp(0);
             file.write(reinterpret_cast<const char*>(&free_head), sizeof(free_head));
             file.write(reinterpret_cast<const char*>(&entry_count), sizeof(entry_count));
+            
+            // Write hash table if dirty
+            if (dirty) {
+                writeHashTable();
+            }
+            
             file.close();
         }
     }
     
     void insert(const string& key, int value) {
-        // Load hash table from file
-        vector<int> hash_table(HASH_SIZE);
-        readHashTable(hash_table.data());
-        
         size_t h = hashKey(key);
         
         // Check if entry already exists
@@ -168,7 +175,7 @@ public:
         }
         
         // Create new entry
-        int index = allocateEntry(hash_table.data());
+        int index = allocateEntry();
         Entry new_entry;
         strncpy(new_entry.key, key.c_str(), MAX_KEY_LEN);
         new_entry.key[MAX_KEY_LEN] = '\0';
@@ -178,16 +185,12 @@ public:
         
         writeEntry(index, new_entry);
         
-        // Update hash table
+        // Update hash table in memory
         hash_table[h] = index;
-        writeHashTable(hash_table.data());
+        dirty = true;
     }
     
     void remove(const string& key, int value) {
-        // Load hash table from file
-        vector<int> hash_table(HASH_SIZE);
-        readHashTable(hash_table.data());
-        
         size_t h = hashKey(key);
         int curr = hash_table[h];
         int prev = INVALID_INDEX;
@@ -208,26 +211,18 @@ public:
                 }
                 
                 // Free the entry
-                freeEntry(curr, hash_table.data());
+                freeEntry(curr);
                 
-                // Update hash table in file
-                writeHashTable(hash_table.data());
+                dirty = true;
                 return;
             }
             
             prev = curr;
             curr = entry.next;
         }
-        
-        // Entry not found, but we still need to update hash table if it changed
-        writeHashTable(hash_table.data());
     }
     
     vector<int> find(const string& key) {
-        // Load hash table from file
-        vector<int> hash_table(HASH_SIZE);
-        readHashTable(hash_table.data());
-        
         vector<int> result;
         size_t h = hashKey(key);
         int curr = hash_table[h];
